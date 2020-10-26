@@ -1,0 +1,4 @@
+beautifulsoup4
+trafilatura
+python-slugify
+requests
