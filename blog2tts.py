@@ -1,10 +1,15 @@
 #!/usr/bin/python3
 
+import sys, os, re
 import trafilatura
+import requests
 from bs4 import BeautifulSoup
 from slugify import slugify
 
-VOICERSS_API_KEY = open(os.path.join(os.path.dirname(__file__), 'voicerss_api_key.txt')).read()
+UA = 'Mozilla/5.0 (Windows NT 10.0; rv:78.0) Gecko/20100101 Firefox/78.0'
+HDRS = {'User-Agent': UA}
+
+VOICERSS_API_KEY = open(os.path.join(os.path.dirname(__file__), 'voicerss_api_key.txt')).read().strip()
 
 def tts(text):
     params = {
@@ -18,10 +23,17 @@ def tts(text):
         'ssml': 'false',
         'b64': 'false'
     }
-    return requests.post('https://api.voicerss.org/', data=params).content
+    resp = requests.post('https://api.voicerss.org/', data=params)
+    print(resp.status_code)
+    print(len(resp.content))
+    if resp.status_code == 200:
+        return resp.content
+    else:
+        raise Exception(resp.text)
 
 def extract_body(url):
-    html = trafilatura.fetch_url(url)
+    #html = trafilatura.fetch_url(url)
+    html = requests.get(url, headers=HDRS).text
     text = trafilatura.extract(html, include_comments=False)
     soup = BeautifulSoup(html, features="lxml")
     title = soup.title.string.split(' - ')[0] # try to strip away website name
