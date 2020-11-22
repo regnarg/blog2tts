@@ -1,17 +1,19 @@
 #!/usr/bin/python3
 
-import sys, os, re
+import sys, os, re, json
 import trafilatura
 import requests
 from bs4 import BeautifulSoup
 from slugify import slugify
+from xml.etree import ElementTree
 
 UA = 'Mozilla/5.0 (Windows NT 10.0; rv:78.0) Gecko/20100101 Firefox/78.0'
 HDRS = {'User-Agent': UA}
 
-VOICERSS_API_KEY = open(os.path.join(os.path.dirname(__file__), 'voicerss_api_key.txt')).read().strip()
+cfg = json.loads(open(os.path.join(os.path.dirname(__file__), 'config.json')).read())
 
-def tts(text):
+def tts_voicerss(text):
+    VOICERSS_API_KEY = open(os.path.join(os.path.dirname(__file__), 'voicerss_api_key.txt')).read().strip()
     params = {
         'key': VOICERSS_API_KEY,
         'hl': 'en-us',
@@ -30,6 +32,41 @@ def tts(text):
         return resp.content
     else:
         raise Exception(resp.text)
+
+def tts_azure(text):
+    #from azure.cognitiveservices.speech import AudioDataStream, SpeechConfig, SpeechSynthesizer, SpeechSynthesisOutputFormat
+    #from azure.cognitiveservices.speech.audio import AudioOutputConfig
+    #speech_config = SpeechConfig(subscription=cfg['azure_key'], region=cfg['azure_region'])
+    base_url = 'https://%s.tts.speech.microsoft.com/'%cfg['azure_region']
+    path = 'cognitiveservices/v1'
+    constructed_url = base_url + path
+    headers = {
+        #'Authorization': 'Bearer ' + cfg['azure_key'],
+        'Ocp-Apim-Subscription-Key': cfg['azure_key'],
+        'Content-Type': 'application/ssml+xml',
+        'X-Microsoft-OutputFormat': 'audio-24khz-160kbitrate-mono-mp3',
+        'User-Agent': 'rgtts0'
+    }
+    xml_body = ElementTree.Element('speak', version='1.0')
+    xml_body.set('{http://www.w3.org/XML/1998/namespace}lang', 'en-us')
+    voice = ElementTree.SubElement(xml_body, 'voice')
+    voice.set('{http://www.w3.org/XML/1998/namespace}lang', 'en-US')
+    voice.set('name', cfg['azure_voice']) # Short name for 'Microsoft Server Speech Text to Speech Voice (en-US, Guy24KRUS)'
+    voice.text = text
+    body = ElementTree.tostring(xml_body)
+
+    response = requests.post(constructed_url, headers=headers, data=body)
+    if response.status_code == 200:
+        return response.content
+    else:
+        raise Exception(response.text)
+
+TTS_ENGINES = dict(azure=tts_azure, voicerss=tts_voicerss)
+
+def tts(*a, **kw):
+    return TTS_ENGINES[cfg['tts']](*a, **kw)
+
+
 
 def extract_body(url):
     #html = trafilatura.fetch_url(url)
