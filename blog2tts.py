@@ -1,8 +1,10 @@
 #!/usr/bin/python3
 
 import sys, os, re, json
+import subprocess
 import trafilatura
 import requests
+import bs4
 from bs4 import BeautifulSoup
 from slugify import slugify
 from xml.etree import ElementTree
@@ -33,7 +35,7 @@ def tts_voicerss(text):
     else:
         raise Exception(resp.text)
 
-def tts_azure(text):
+def tts_azure_single(text, *, format='audio-24khz-160kbitrate-mono-mp3'):
     #from azure.cognitiveservices.speech import AudioDataStream, SpeechConfig, SpeechSynthesizer, SpeechSynthesisOutputFormat
     #from azure.cognitiveservices.speech.audio import AudioOutputConfig
     #speech_config = SpeechConfig(subscription=cfg['azure_key'], region=cfg['azure_region'])
@@ -44,14 +46,14 @@ def tts_azure(text):
         #'Authorization': 'Bearer ' + cfg['azure_key'],
         'Ocp-Apim-Subscription-Key': cfg['azure_key'],
         'Content-Type': 'application/ssml+xml',
-        'X-Microsoft-OutputFormat': 'audio-24khz-160kbitrate-mono-mp3',
+        'X-Microsoft-OutputFormat': format,
         'User-Agent': 'rgtts0'
     }
     xml_body = ElementTree.Element('speak', version='1.0')
     xml_body.set('{http://www.w3.org/XML/1998/namespace}lang', 'en-us')
     voice = ElementTree.SubElement(xml_body, 'voice')
     voice.set('{http://www.w3.org/XML/1998/namespace}lang', 'en-US')
-    voice.set('name', cfg['azure_voice']) # Short name for 'Microsoft Server Speech Text to Speech Voice (en-US, Guy24KRUS)'
+    voice.set('name', os.environ.get('AZURE_VOICE', cfg['azure_voice'])) # Short name for 'Microsoft Server Speech Text to Speech Voice (en-US, Guy24KRUS)'
     voice.text = text
     body = ElementTree.tostring(xml_body)
 
@@ -60,6 +62,49 @@ def tts_azure(text):
         return response.content
     else:
         raise Exception(response.text)
+
+
+
+def split_chunks(body, max_size):
+    cur_chunk = []
+    chunks = []
+    chunk_size = 0
+    for line in body.splitlines():
+        new_size = chunk_size + len(line)
+        if new_size > max_size:
+            chunks.append('\n'.join(cur_chunk))
+            cur_chunk = []
+            chunk_size = 0
+        else:
+            cur_chunk.append(line)
+            chunk_size += len(line)
+    if cur_chunk:
+        chunks.append('\n'.join(cur_chunk))
+    return chunks
+
+# Azure is limited to 10min output. Emerically, this seems to be around 8000 chars,
+# using 5000 to be safe.
+AZURE_CHUNK_SIZE = 5000
+def tts_azure_chunked(body):
+    chunks = split_chunks(body, AZURE_CHUNK_SIZE)
+    print("Split into",len(chunks),"chunks")
+    chunk_data = []
+    for chunk in chunks:
+        r = tts_azure_single(chunk, format='raw-16khz-16bit-mono-pcm')
+        chunk_data.append(r)
+    data = b''.join(chunk_data)
+    print(len(data))
+    mp3_data = subprocess.run(
+            ['ffmpeg',  '-f', 's16le', '-ar', '16k', '-ac', '1',
+                '-i', '-', '-acodec', 'mp3', '-f', 'mp3', '-b:a', '160k', '-'],
+            input=data, stdout=subprocess.PIPE).stdout
+    return mp3_data
+
+def tts_azure(body):
+    if len(body) > AZURE_CHUNK_SIZE:
+        return tts_azure_chunked(body)
+    else:
+        return tts_azure_single(body)
 
 TTS_ENGINES = dict(azure=tts_azure, voicerss=tts_voicerss)
 
@@ -74,13 +119,20 @@ def extract_body(url):
     text = trafilatura.extract(html, include_comments=False)
     soup = BeautifulSoup(html, features="lxml")
     title = soup.title.string.split(' - ')[0] # try to strip away website name
-    text = title + '.\n\n' + text # say the title at the beginning
+    text = title + '.\n\n' + (text or '') # say the title at the beginning
     return title, text
 
 def process(url, *, filename_prefix='', out_dir='.'):
+    if url.startswith('#'): return
     title, body = extract_body(url)
     print("Processing", title, url)
     fn = os.path.join(out_dir, filename_prefix + slugify(title) + '.mp3')
+    transcript_fn = os.path.join(out_dir, filename_prefix + slugify(title) + '.txt')
+    with open(transcript_fn, 'w') as fh:
+        fh.write(body)
+    if os.path.exists(fn):
+        print(fn, "already exists, skipping")
+        return
     r = tts(body)
     with open(fn, 'wb') as fh:
         fh.write(r)
